@@ -43,7 +43,7 @@
     (finish-output)
     (handler-case
         (uiop:run-program command
-                          :input '(:string "")
+                          :input nil
                           :output :string
                           :error-output nil)
       (error (c)

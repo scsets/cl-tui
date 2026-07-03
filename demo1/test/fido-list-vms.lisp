@@ -1,0 +1,32 @@
+(require :asdf)
+(pushnew #P"/opt/tmp/cl-tui/demo1/" asdf:*central-registry* :test #'equal)
+(asdf:clear-system :smartos-test)
+(asdf:load-system :smartos-test)
+
+(format t "=== run-capture vmadm list ===~%")
+(finish-output)
+(let ((text (smartos-test::run-capture '("/usr/sbin/vmadm" "list"))))
+  (unless text (error "run-capture returned nil"))
+  (format t "len=~D~%" (length text))
+  (let ((vms (smartos-test::list-vms)))
+    (unless (plusp (length vms))
+      (error "list-vms returned no records"))
+    (format t "list-vms count=~D first=~A~%"
+            (length vms)
+            (smartos-test::vm-record-name (first vms)))))
+
+(format t "=== run-capture vmadm get ===~%")
+(let ((uuid "3a8fcbe5-1248-4abf-9afc-ea55aa8202c5"))
+  (let ((text (smartos-test::run-capture (list "/usr/sbin/vmadm" "get" uuid))))
+    (unless (and text (plusp (length text)))
+      (error "vmadm get returned no output"))
+    (format t "get len=~D~%" (length text))))
+
+(format t "=== imgadm avail sample ===~%")
+(let ((images (smartos-test::list-available-images)))
+  (unless (plusp (length images))
+    (error "list-available-images returned no records"))
+  (format t "images count=~D~%" (length images)))
+
+(format t "All fido integration checks passed.~%")
+(quit)
