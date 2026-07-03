@@ -54,26 +54,36 @@ Characteristics we *do not want*:
 - A free Lisp REPL exposed to the operator (no typing =(...)= at the prompt).
 - Flashy progress bars unless plain text progress is insufficient.
 
-** Visual vocabulary (fixed)
+** Visual vocabulary (stable regions)
 
-- Design to *80 columns by 24 rows*; degrade gracefully if smaller.
+- *Minimum* terminal size: 80 columns by 24 rows. Below this, degrade
+  gracefully (truncate, paginate aggressively, one-line warning if needed).
+- *Typical* SSH sessions today are larger (often 100--132 columns, 30--50
+  rows). Use the *detected* terminal size at startup; do not cap the app
+  to 80x24 when more space is available.
+- *Optional cap* (recommendation: 132 columns, 50 rows) keeps lines readable
+  on very wide monitors; body content uses =min(detected-cols, cap)=.
+- *Serial console* or unknown size: assume 80x24 until proven otherwise.
 - *ASCII only*; reverse video at most (title bar, selected line).
-- Stable screen regions on every screen:
+- Three *stable regions* on every screen -- same skeleton, body scales:
 
 #+begin_example
-+------------------------------------------------------------------------------+  row 1-2  title
++------------------------------------------------------------------------------+  title (1--2 rows)
 | MYAPP 1.0                            fido                        2026-07-03   |
 +------------------------------------------------------------------------------+
 |                                                                              |
-|    1.  List items                                                            |  body:
-|    2.  Create                                                                |  menu or
-|    3.  Delete                                                                |  form
+|    1.  List items                                                            |  body: grows with
+|    2.  Create                                                                |  terminal height
+|    3.  Delete                                                                |  and width
 |    0.  Exit                                                                  |
-|                                                                              |
-+------------------------------------------------------------------------------+  row 24
-| Enter choice: _                                        [ status message ]    |  prompt / status
+|    ... more items visible on taller terminals ...                            |
++------------------------------------------------------------------------------+  status (1 row)
+| Enter choice: _                                        [ status message ]    |  prompt / keys
 +------------------------------------------------------------------------------+
 #+end_example
+
+Diagram shows the layout at minimum width; borders and rows stretch with the
+terminal. This is warehouse reflow -- not web-style responsive grids.
 
 ** Name note
 
@@ -171,21 +181,46 @@ interactive apps), and the build-time decision on the Lisp escape hatch
 
 Resist a large terminal API. A menu-and-form app needs only:
 
+- Query terminal size (columns and rows); refresh on window change.
 - Clear the screen; move cursor to row/column.
 - Write text at the cursor.
 - Reverse video on/off (title bar, selected line).
 - Ring the bell (invalid key).
 - Read a line (cooked input) or, later, a single key (cbreak).
 
-Everything the app draws is built from this contract.
+Everything the app draws is built from this contract. Layout code takes
+=(cols rows)= on every draw; pagination and field width derive from them.
+
+** Terminal size and reflow
+
+| Role | Rule |
+|------+------|
+| Minimum | 80x24 -- required floor; degrade below, never require larger |
+| Default | Detect at startup via =TIOCGWINSZ= (FFI) or =tput cols= / =tput lines= fallback |
+| Cap | 132x50 recommended maximum for layout math (optional, tunable per app) |
+| Resize | On =SIGWINCH=, re-query size and *full repaint* current screen |
+| Serial / unknown | Assume 80x24; no resize events |
+
+*What scales* within the three-region layout (same discipline as SMIT/sysadmsh):
+
+- *Wider:* longer title and status lines; more disambiguation columns on one
+  row; wider review-and-confirm tables.
+- *Taller:* more menu or list items per page before pagination; taller
+  instrument panel body (still no scrolling log wall).
+- *What does not scale:* multi-column responsive grids, split panes, or
+  wrapping prose into newspaper columns -- that is dashboard TUI territory.
+
+Pagination: =items-per-page = body-rows - margins=, computed from live height.
+Instrument panels redraw their frame at the new size on resize.
 
 ** Implementation choices (settled recommendations)
 
 | Decision | Recommendation | Rationale |
 |----------+----------------+-----------|
+| Terminal size | *Detect at startup; handle SIGWINCH* | Modern SSH is often >80x24; serial still works at floor |
 | Escape sequences vs terminfo | Start with *direct ANSI/VT100* behind the abstraction | Safe over SSH on SmartOS; no curses dependency |
 | Line input vs single-key | Start with *cooked* input (type + Enter) | Robust, scriptable, testable by piping text |
-| Redraw strategy | *Full repaint* on state change | No incremental diffing; instant for menus |
+| Redraw strategy | *Full repaint* on state or size change | No incremental diffing; instant for menus |
 | Encoding | *ASCII only* | Matches aesthetic; avoids width bugs |
 | Exit paths | *Always restore terminal* (normal video, sane line discipline) | Every exit, including errors |
 
@@ -195,8 +230,11 @@ measured requirement.
 ** Signals and =TERM=
 
 - Read =TERM= at startup.
-- Decide treatment of interrupt (Ctrl-C), terminate, and window-change (may
-  ignore resize and hold 80x24).
+- On *window change* (=SIGWINCH=): re-query columns and rows, full repaint.
+  Mid-form resize: repaint and preserve current field when practical; at
+  minimum repaint before the next prompt.
+- Decide treatment of interrupt (Ctrl-C) and terminate (clean shutdown and
+  terminal restore).
 - Never leave the terminal in raw/no-echo mode after an error.
 
 * Language and implementation
@@ -330,8 +368,8 @@ thin skins over validated operations.
   the app is scriptable and tests can feed text. The funnel needs *two modes*:
   block until a key (menus and forms), and wake on timeout as well as key
   (instrument panels while a job runs).
-- *Redraw by repaint:* clear and repaint from current state; draw functions
-  should be near-pure functions of state.
+- *Redraw by repaint:* clear and repaint from current state and terminal
+  size; draw functions should be near-pure functions of state and =(cols rows)=.
 - *Conditions:* wrap each screen loop in a handler; in delivery, show a
   short status-line message and continue -- never crash out of the session.
 
@@ -416,10 +454,10 @@ scripting path (batch flags are a separate, explicit mode).
 
 ** Screen discipline
 
-- Clear or redraw consistently (=cli:clear-screen= or fixed layout).
+- Clear or redraw consistently; layout follows detected terminal size.
 - One concept per screen when possible.
-- Avoid scrolling walls of text; paginate long lists ("Press Enter for
-  next page") in the old style if needed.
+- Avoid scrolling walls of text; paginate long lists using live body height
+  ("Press Enter for next page") in the old style if needed.
 
 ** ASCII only in operator-facing text
 
@@ -653,11 +691,11 @@ Bottom key legend (every screen) PINE                   always-visible live keys
 cl-tui/                    ; shared library + this document
   initial-considerations.org
   src/
-    terminal.lisp          ; minimal primitives (clear, move, reverse, bell)
+    terminal.lisp          ; size query, clear, move, reverse, bell, SIGWINCH
     input.lisp             ; one funnel: block + timeout modes
     operator.lisp          ; menus, prompts, pick-one, wait-for-enter
     subprocess.lisp        ; run with feedback; show-command-then-run
-    screen.lisp            ; 80x24 layout; menu, form, instrument panel
+    screen.lisp            ; three-region layout; scales cols/rows to cap
 
 some-app/                  ; one delivered application (example: zones)
   some-app.asd
@@ -687,14 +725,16 @@ interaction and subprocess conventions. Each SmartOS app adds its own
    =/opt/custom/lispworks=; delivery verified on host.
 2. Line input vs single-key for first screens (recommendation: cooked first).
 3. Direct ANSI vs terminfo (recommendation: ANSI behind abstraction first).
-4. How the app is installed as a login program; lockdown level per role.
-5. Confirm =TERM= values on SSH vs serial console on production hosts.
-6. Where delivered binaries live (=/opt/tools/bin=? per-app =/opt/APP/bin=?).
-7. Logging: file per run, syslog, or stderr-only in debug deliveries.
-8. Wire formats at API boundaries vs internal s-expression models.
-9. Whether =--force= batch flags exist alongside the menu binary for scripts.
-10. How multiple apps share one =cl-tui= library version on the same host.
-11. Input funnel timeout interval for instrument panels during long jobs.
+4. Terminal size cap -- *resolved* (recommendation: detect live size, floor
+   80x24, optional cap 132x50).
+5. How the app is installed as a login program; lockdown level per role.
+6. Confirm =TERM= values on SSH vs serial console on production hosts.
+7. Where delivered binaries live (=/opt/tools/bin=? per-app =/opt/APP/bin=?).
+8. Logging: file per run, syslog, or stderr-only in debug deliveries.
+9. Wire formats at API boundaries vs internal s-expression models.
+10. Whether =--force= batch flags exist alongside the menu binary for scripts.
+11. How multiple apps share one =cl-tui= library version on the same host.
+12. Input funnel timeout interval for instrument panels during long jobs.
 
 * Summary
 
@@ -702,7 +742,9 @@ Build *shop-floor terminal applications* on SmartOS in Common Lisp using
 LispWorks Delivery: numbered menus, plain feedback, no arbitrary operator
 Lisp, developer power in the Listener, =defstruct= data models, explicit
 disambiguation, and thin wrappers over *whatever SmartOS platform commands
-the application needs*. Study SMIT, PERFORM, and memtest86 for menu, form,
+the application needs*. Layout uses a stable three-region screen that
+*detects terminal size* (minimum 80x24, use extra space when present,
+repaint on resize). Study SMIT, PERFORM, and memtest86 for menu, form,
 and panel patterns. Show commands before running them. SBCL smoke-tests
 portable core. =cl-tui= is the shared operator layer; each app owns its
 domain (zones today, storage, network, services tomorrow). Avoid modern
