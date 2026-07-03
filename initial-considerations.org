@@ -1,0 +1,392 @@
+#+TITLE: cl-tui -- Initial Considerations
+#+AUTHOR: SCS
+#+DATE: 2026-07-03
+
+* Purpose of this document
+
+This project (=cl-tui=) collects core principles for building terminal
+applications on *SmartOS* in *Common Lisp*, using a *commercial LispWorks*
+license as the primary implementation. The goal is not a modern "TUI
+framework" with panels, mouse support, and Unicode chrome. The goal is the
+interaction model of older *MS-DOS*, *Xenix*, and *Unix shop* programs:
+a clear screen, numbered choices, plain prompts, visible feedback while work
+runs, and confirmation before destructive actions.
+
+Think warehouse inventory, accounting entry, stock control, back-office
+admin -- programs that lived entirely in the terminal and were operated by
+staff who never saw source code and never typed arbitrary commands.
+
+This document records language, platform, and design decisions for building
+such applications on SmartOS. It is meant to guide *any* future operator
+tool -- zone management, storage, networking, services, inventory, or
+back-office workflows -- that shares this interaction style. Zone tooling
+(=vmadm=, =imgadm=) is a motivating example, not the boundary of the
+project.
+
+* What we are building
+
+** The warehouse-app interaction model
+
+Characteristics we *want*:
+
+- *Blank or cleared screen* at each major step (or a stable header + body).
+- *Numbered menus*: "1. Create  2. Delete  3. List  0. Exit".
+- *Single-key or short answers* where safe; typed strings where necessary.
+- *Explicit feedback*: "Running job... please wait." during long operations.
+- *Outcome lines*: "Done." / "Failed: reason." / "Record deleted."
+- *Press Enter to continue* between screens when the operator must read a
+  result before moving on.
+- *Confirmation gates* before destructive work: "Delete item X? (Y/N)".
+- *Disambiguation lists* when a short label matches several records
+  (e.g. several images sharing a name, several datasets, several NIC tags):
+  numbered list, pick one, no magic defaults.
+
+Characteristics we *do not want*:
+
+- Scrollable widget trees, split panes, modal dialog toolkits.
+- Arrow-key-driven full-screen frameworks (ncurses "dashboard" style).
+- Embedded web views, HTML, or browser-based UI.
+- A free Lisp REPL exposed to the operator (no typing =(...)= at the prompt).
+- Flashy progress bars unless plain text progress is insufficient.
+
+** Name note
+
+=cl-tui= is a working project name. "TUI" here means *terminal user
+interface* in the historical sense (character terminal, line oriented),
+not the modern ncurses/Bubble Tea/Textual meaning. If a better name appears
+(=cl-shop=, =cl-console=, =cl-menus=), rename freely.
+
+* Platform scope: SmartOS only
+
+All design choices assume:
+
+- The program runs in the *SmartOS global zone* (or a native SmartOS zone
+  with the platform commands it needs), not Linux, not generic illumos, not
+  macOS production deploy.
+- The program orchestrates *SmartOS platform facilities* -- whatever commands
+  and APIs the global zone provides for the task at hand (see below).
+- Operator access is typically SSH into the global zone, often without a
+  full login profile (non-interactive =PATH= is a recurring trap -- use
+  explicit paths or a wrapper that sets environment).
+- Third-party runtimes may exist under =/opt/tools/bin= on some hosts, but
+  *this project does not depend on them*. LispWorks is the runtime we control.
+
+Do not assume GNU/Linux man pages, =glibc= quirks, or Linux-only FFI when
+reading external library documentation.
+
+** Scope of SmartOS operations (open-ended)
+
+=cl-tui= does not limit itself to virtualization commands. Any global-zone
+operation that fits the warehouse-app model is in scope. Examples include
+(but do not exhaust):
+
+| Area            | Typical platform tools / concepts                    |
+|-----------------+------------------------------------------------------|
+| Zones / VMs     | =vmadm=, =imgadm=, =zlogin=, manifests, brands      |
+| Storage / ZFS   | =zfs=, =zpool=, datasets, snapshots, quotas        |
+| Networking      | =dladm=, =ipadm=, =flowadm=, NIC tags, static routes |
+| Services        | =svcs=, SMF milestones, enable/disable, restarts   |
+| System info     | =uname=, =prtconf=, =zonename=, platform buildstamp |
+| Packages / images | =pkgin=, =imgadm avail/import= (where used)        |
+| Jobs / audit    | long-running subprocesses, log tail, status files  |
+
+Each *application* built on =cl-tui= chooses its domain. The shared library
+holds interaction patterns (menus, prompts, disambiguation, subprocess
+feedback); domain systems hold SmartOS-specific wrappers and data models
+for that app's commands only.
+
+Design for *extension*: new menu items and new command modules should not
+require rethinking the operator model.
+
+* Language and implementation
+
+** Primary: Commercial LispWorks
+
+- SCS holds commercial LispWorks licenses. This is the *authoritative*
+  development and delivery target.
+- Use LispWorks Delivery to produce a standalone executable (e.g.
+  =smartos-ops= or =zone-tools=) whose entry is a custom =main=, not the IDE
+  Listener.
+- Delivery image is tuned for console use (=:interface :console= on Unix).
+- Keep the delivered image focused: omit editor, compiler, and IDE pieces
+  the operator does not need. Add only what the menu loop requires.
+
+** Secondary: SBCL for smoke tests only
+
+- SBCL may compile and run portable subsets to catch style warnings and
+  gross portability mistakes.
+- SBCL is *not* an authoritative test target when LispWorks-specific
+  features (Delivery, certain FFI, implementation packages) are used.
+- Say plainly in code comments or system docs when a file is LispWorks-only.
+
+** Libraries and SCS.ASD policy
+
+- Before adding dependencies, consult =~/infra/lisp/cl-lib/scs.asd=.
+- Prefer accepted libraries already vetted for LispWorks and SmartOS native
+  zones. Examine new libraries one at a time: FFI, native extensions,
+  Quicklisp availability, build requirements on SmartOS.
+- For warehouse-style apps, *prefer stdio and LispWorks stream I/O* over
+  ncurses bindings unless a measured need arises later.
+
+* Operator interface vs developer interface
+
+This distinction is central.
+
+| Audience   | Interface              | Purpose                          |
+|------------+------------------------+----------------------------------|
+| Operator   | Delivered binary, menu | Day-to-day work on the shop floor |
+| Developer  | LispWorks Listener     | Design, debug, extend, teach     |
+
+** Operator: constrained command loop
+
+The delivered binary runs something like:
+
+#+begin_example
+smartos-ops 1.0.0 -- SmartOS operator console
+
+  1. Zones
+  2. Storage
+  3. Network
+  0. Exit
+
+Choice:
+#+end_example
+
+Submenus drill into domain actions (create zone, list pools, etc.). The
+operator cannot evaluate arbitrary Lisp. They choose numbered options
+and answer prompts. This is *REPL-like* only in the sense of repeated
+read-eval-print *cycles you define* -- not a language REPL.
+
+** Developer: full Listener during development
+
+In LispWorks IDE or batch development image:
+
+- Load ASDF systems, inspect structs, call domain functions, test command
+  parsers against live platform output on a SmartOS host.
+- Use the Listener to refine prompts and data models before freezing them
+  into the delivered menu loop.
+
+** Optional expert mode (later, maybe)
+
+A hidden menu item or separate entry (e.g. =appname-dev=) could expose
+more power. Default remains constrained. Do not ship the full Listener to
+operators without an explicit decision.
+
+* Core implementation principles
+
+** Data model first
+
+Before menus or Delivery scripts:
+
+1. Identify entities for *this application* (zone, dataset, service, job
+   result, manifest, etc.).
+2. Represent them with plain =defstruct= (preferred over CLOS unless
+   dispatch protocol is truly needed).
+3. Define transformations (parse command output, resolve labels to IDs,
+   build files or payloads for platform tools).
+4. State invariants (required fields, mutual exclusions, confirm-before-delete).
+
+Warehouse apps feel reliable when the *data* is explicit and the menus are
+thin skins over validated operations.
+
+** Menus are thin; logic is testable
+
+#+begin_src lisp
+;; Menu layer (stdio)
+(defun command-loop ()
+  (loop ... (ecase (read-menu-choice) ...)))
+
+;; Domain layer (testable without stdin)
+(defun resolve-record (spec &key kind)
+  ...)
+#+end_src
+
+SBCL smoke tests target the domain layer. LispWorks integration tests may
+call real platform commands on a SmartOS host when available.
+
+** Feedback during long work
+
+SmartOS operations (zone create, =zfs send=, service restart, large
+imports) may take seconds to minutes. The operator must never stare at a
+frozen screen.
+
+#+begin_example
+Running operation 'create-zone'...
+(This may take a while.)
+#+end_example
+
+Print status *before* calling external commands. Stream subprocess output
+when helpful (=uiop:run-program= with appropriate stream arguments). Print
+a clear completion line with UUID or error.
+
+** Disambiguation instead of guessing
+
+When a label matches multiple records (common with catalog listings,
+installed images, dataset names, or service instances), *never* pick the
+first match silently.
+
+#+begin_example
+Multiple images match 'ubuntu-24.04' for brand lx:
+
+  1. ubuntu-24.04  20250407  lx-dataset  8a1b6e3a-...
+  2. ubuntu-24.04  20250627  zvol        97219479-...
+
+Enter number:
+#+end_example
+
+The underlying API often requires an opaque ID (UUID, FMRI, dataset path);
+the menu layer resolves human-friendly specs and numbered picks.
+
+** Confirm destructive actions
+
+Delete, overwrite, reprovision -- always confirm unless =--force= on a
+scripting path (batch flags are a separate, explicit mode).
+
+** Screen discipline
+
+- Clear or redraw consistently (=cli:clear-screen= or fixed layout).
+- One concept per screen when possible.
+- Avoid scrolling walls of text; paginate long lists ("Press Enter for
+  next page") in the old style if needed.
+
+** ASCII only in operator-facing text
+
+Use =--= not em-dash, plain quotes, no fancy ellipsis. Terminals on shop
+floors and serial consoles reward boring text.
+
+* External command integration (SmartOS)
+
+Warehouse apps orchestrate platform tools rather than reimplement them.
+
+- Wrap each SmartOS command (or stable shell pipeline) in a small module
+  with explicit argument lists and parsed result types.
+- Parse tabular or line-oriented output defensively; platform output formats
+  vary by command and version.
+- Surface subprocess failures as operator-readable messages, not Lisp
+  condition backtraces (log traces to a file or stderr in debug builds).
+- Use absolute paths (e.g. =/usr/sbin/vmadm=, =/sbin/zfs=) when =PATH=
+  may be minimal.
+- Centralize "run command with feedback" in =cl-tui= so every application
+  behaves consistently during long jobs.
+
+Some operations may later use ioctl, libzfs, or other FFI -- treat each as
+a separate adoption decision under SCS.ASD policy. Default remains
+subprocess orchestration of existing CLI tools the operator already trusts.
+
+* Delivery and distribution
+
+We are *not* optimizing for a single static binary in the Go sense, but
+LispWorks Delivery *does* produce one executable the operator can run.
+
+Typical flow:
+
+1. Develop in LispWorks on SmartOS (or cross-develop with care).
+2. Load ASDF system and Delivery script.
+3. =deliver= produces the application binary (name per app).
+4. Install under =/opt/.../bin= on SmartOS hosts.
+5. Upgrade by replacing the delivered binary and release notes.
+
+Document required LispWorks runtime assumptions (console, 64-bit, etc.).
+Version the operator-facing banner (=myapp 1.2.0=).
+
+SBCL has no parallel Delivery story; do not rely on SBCL for operator deploy.
+
+* Why Common Lisp fits this style (honest lean)
+
+Other languages were considered for SmartOS operator tooling (shell, Go,
+Python, Node). For *this* interaction model on SmartOS:
+
+- *Warehouse menus* are easy with =read-line=, =format=, and structured
+  loops -- no framework required.
+- *LispWorks Delivery* gives a single operator command without Python venvs
+  or Node module trees.
+- *Development joy* lives in the Listener: inspect records, retry parsers,
+  teach juniors with live data from the machine.
+- *Data-driven design* matches s-expression configs and =defstruct= models
+  before wire-format ceremony at API boundaries.
+
+Go and Python excel when the product is "polished terminal dashboard" or
+"pip install everywhere." Common Lisp excels when the product is
+*controlled shop-floor interaction* plus *deep leverage for the author*.
+
+The hinge is not "which widget toolkit" but *whether the operator may speak
+the language*. Warehouse apps say no; developers say yes in the IDE.
+
+* Anti-patterns to avoid
+
+- Shipping the full Listener as the production UI.
+- Silent defaults when a list command returns multiple matches.
+- Fancy ncurses layers before plain menus prove insufficient.
+- Assuming =#!/usr/bin/env= or =PATH= on non-login SSH sessions.
+- CLOS-heavy designs when =defstruct= and functions suffice.
+- Linux-only library docs applied blindly to SmartOS.
+- Hiding long platform work with no progress message (operators think it hung).
+- Baking one app's domain (=vmadm= only) into the shared =cl-tui= library.
+
+* Illustrative example: ambiguous image names (zones)
+
+One case that motivated the disambiguation rules; the same pattern applies
+anywhere labels are ambiguous (datasets, zones by alias, service instances).
+
+- =imgadm avail name=base-64-lts= shows many versions (14.4.0 ... 25.4.0).
+- =imgadm list= on a host shows only installed images, but =ubuntu-24.04=
+  may appear twice (=lx-dataset= vs =zvol=).
+- Operator enters =base-64-lts:24.4.1= or picks from a numbered list.
+- The payload sent to =vmadm= uses a UUID; the menu layer resolves the label.
+
+A storage app might disambiguate =tank/data= vs =tank/data@snap= the same way.
+
+* Suggested system shape (when coding starts)
+
+#+begin_example
+cl-tui/                    ; shared library + this document
+  initial-considerations.org
+  src/
+    operator.lisp          ; menus, prompts, pick-one, wait-for-enter
+    subprocess.lisp        ; run with feedback conventions
+    screen.lisp            ; clear, banner, pagination
+
+some-app/                  ; one delivered application (example: zones)
+  some-app.asd
+  src/
+    package.lisp
+    data.lisp              ; defstruct for this domain
+    platform/              ; one file per command family as needed
+      vmadm.lisp
+      imgadm.lisp
+      zfs.lisp
+      ...
+    operator.lisp          ; app menus calling cl-tui + domain
+    main.lisp              ; deliver entry
+  delivery/
+    deliver.lisp
+  test/
+    ...                    ; SBCL-portable domain tests
+#+end_example
+
+Shared =cl-tui= library holds *no* application domain -- only operator
+interaction and subprocess conventions. Each SmartOS app adds its own
+=platform/= tree as its scope grows.
+
+* Open questions (to resolve before large implementations)
+
+1. Where do delivered binaries live on SmartOS hosts (=/opt/tools/bin=? per-app =/opt/APP/bin=?).
+2. Whether non-login SSH wrappers set =PATH= and =TERM= explicitly.
+3. Logging: file per run, syslog, or stderr-only in debug deliveries.
+4. Wire formats at boundaries (JSON for =vmadm -f=, plain text for others):
+   internal s-expression models may differ per app.
+5. Whether =--force= batch flags exist alongside the menu binary for scripts.
+6. How multiple apps share one =cl-tui= library version on the same host.
+
+* Summary
+
+Build *shop-floor terminal applications* on SmartOS in Common Lisp using
+LispWorks Delivery: numbered menus, plain feedback, no arbitrary operator
+Lisp, developer power in the Listener, =defstruct= data models, explicit
+disambiguation, and thin wrappers over *whatever SmartOS platform commands
+the application needs*. SBCL smoke-tests portable core. =cl-tui= is the
+shared operator layer; each app owns its domain (zones today, storage,
+network, services tomorrow). Avoid modern dashboard TUIs unless plain menus
+fail a measured requirement.
+
+That is the core of =cl-tui=.
