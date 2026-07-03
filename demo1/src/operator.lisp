@@ -43,8 +43,9 @@
     (finish-output)
     (handler-case
         (uiop:run-program command
+                          :input '(:string "")
                           :output :string
-                          :error-output :string)
+                          :error-output nil)
       (error (c)
         (format nil "Command failed: ~A" c)))))
 

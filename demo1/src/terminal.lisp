@@ -28,6 +28,7 @@
   (handler-case
       (let* ((line (string-trim '(#\space #\tab #\newline #\return)
                                 (uiop:run-program '("/usr/bin/stty" "size")
+                                                  :input '(:string "")
                                                   :output :string
                                                   :error-output :string)))
              (parts (uiop:split-string line)))

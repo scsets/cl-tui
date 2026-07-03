@@ -47,6 +47,7 @@
           (format t "VM settings~%~%")
           (format t "Command: ~{~A~^ ~}~%~%"
                   command)
+          (format t "Fetching VM settings... please wait.~%~%")
           (finish-output)
           (let* ((detail (lookup-vm-detail record))
                  (text (vm-detail-text detail :command (format nil "~{~A~^ ~}" command))))
