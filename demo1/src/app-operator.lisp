@@ -24,6 +24,34 @@
     (let ((text (vm-list-table-text (list-vms))))
       (paginate-text text cols rows))))
 
+(defun screen-vm-settings ()
+  "Pick a VM by number, then show its vmadm get settings."
+  (let ((records (list-vms)))
+    (when (null records)
+      (multiple-value-bind (cols rows)
+          (terminal-size)
+        (terminal-clear)
+        (draw-header cols)
+        (format t "No virtual machines found.~%")
+        (wait-for-enter))
+      (return-from screen-vm-settings))
+    (let* ((record (pick-numbered-item records
+                                       :title "Select a virtual machine"
+                                       :label #'vm-picker-label))
+           (command (when record (vmadm-get-cmd (vm-record-uuid record)))))
+      (when record
+        (multiple-value-bind (cols rows)
+            (terminal-size)
+          (terminal-clear)
+          (draw-header cols)
+          (format t "VM settings~%~%")
+          (format t "Command: ~{~A~^ ~}~%~%"
+                  command)
+          (finish-output)
+          (let* ((detail (lookup-vm-detail record))
+                 (text (vm-detail-text detail :command (format nil "~{~A~^ ~}" command))))
+            (paginate-text text cols rows)))))))
+
 (defun command-loop ()
   (handler-case
       (loop
@@ -33,14 +61,16 @@
            (draw-header cols)
            (format t "~%  1. Hardware parameters~%")
            (format t "  2. List virtual machines~%")
+           (format t "  3. View VM settings~%")
            (terpri)
            (format t "  0. Exit~%~%")
            (draw-status-line cols rows "0=Exit  Enter=choose"))
-         (let ((choice (read-menu-choice :valid '("0" "1" "2"))))
+         (let ((choice (read-menu-choice :valid '("0" "1" "2" "3"))))
            (cond
              ((string= choice "0") (return))
              ((string= choice "1") (screen-hardware))
-             ((string= choice "2") (screen-vm-list)))))
+             ((string= choice "2") (screen-vm-list))
+             ((string= choice "3") (screen-vm-settings)))))
     (error (e)
       (format t "~%Unexpected error: ~A~%" e)
       (wait-for-enter))))

@@ -7,10 +7,10 @@
   (string-trim '(#\space #\tab)
                (or (read-line *standard-input* nil "") "")))
 
-(defun read-menu-choice (&key valid)
+(defun read-menu-choice (&key valid (prompt "Enter choice: "))
   "Read one menu token. VALID is a list of strings such as (\"0\" \"1\" \"2\")."
   (loop
-     (let ((choice (read-line-trimmed "Enter choice: ")))
+     (let ((choice (read-line-trimmed prompt)))
        (when (member choice valid :test #'string=)
          (return choice))
        (terminal-bell)

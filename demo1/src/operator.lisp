@@ -64,3 +64,26 @@
                (when (< (+ start page-size) (length lines))
                  (wait-for-enter "Press Enter for next page...")))
           finally (wait-for-enter))))
+
+(defun pick-numbered-item (items &key title (label #'identity) (prompt "Enter number: "))
+  "Show ITEMS numbered from 1 and return the chosen item, or NIL for cancel."
+  (when items
+    (loop
+       (multiple-value-bind (cols rows)
+           (terminal-size)
+         (terminal-clear)
+         (draw-header cols)
+         (format t "~A~%~%" (or title "Select an item"))
+         (loop for item in items
+               for n from 1
+               do (format t "  ~D. ~A~%" n (funcall label item)))
+         (terpri)
+         (format t "  0. Cancel~%~%")
+         (draw-status-line cols rows "0=Cancel  Enter=choose"))
+       (let* ((valid (append '("0")
+                             (loop for n from 1 to (length items)
+                                   collect (write-to-string n))))
+              (choice (read-menu-choice :valid valid :prompt prompt)))
+         (cond
+           ((string= choice "0") (return nil))
+           (t (return (nth (1- (parse-integer choice)) items))))))))
