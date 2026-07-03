@@ -1,0 +1,866 @@
+#+title: LispWorks ncurses library survey on SmartOS
+#+subtitle: ncurses framework survey; orthogonal to warehouse ANSI UI in initial-considerations.org
+#+author: scs / Codex
+#+date: 2026-07-03
+#+startup: overview
+
+#+begin_quote
+This document surveys *ncurses-style Common Lisp TUI libraries* on fido.
+It is *not* the design for the =cl-tui= project (warehouse ANSI menus in
+=initial-considerations.org=). Do not read Croatoan/cl-charms recommendations
+here as overriding that design unless a measured need for ncurses arises.
+
+*Name collision:* the Quicklisp library =cl-tui= (naryl, built on =cl-charms=)
+is unrelated to this repository's =cl-tui= operator-app framework.
+#+end_quote
+
+* Abstract
+
+This paper tests Common Lisp terminal user interface libraries on the
+actual target environment:
+
+- host: =fido.scs.re=
+- OS: =SunOS fido.scs.re 5.11 joyent_20260522T154557Z i86pc=
+- Lisp: =LispWorks 7.1.0=, using
+  =/opt/custom/lispworks/bin/lispworks-7-1-0-amd64-solaris -tty=
+- test root: =/opt/tmp/cl-tui-test=
+- tools: =/opt/tools/bin= and =/opt/tools/sbin= first in =PATH=
+
+The short answer is:
+
+1. For a real Common Lisp TUI on this machine, rely first on =Croatoan=,
+   but do not rely on it unpatched.  It needs a SmartOS/pkgsrc ncurses
+   compatibility fix because the installed library is
+   =/opt/tools/lib/libncurses.so=, while Croatoan looks for
+   =libncursesw.so=.
+2. Use =cl-charms= as the lower-level ncurses fallback.  It also works
+   once the compiler can see =/opt/tools/include/ncurses=.
+3. =cl-tui= (naryl, on =cl-charms=), loads and draws in a PTY after the
+   same ncurses fix, but it is older and less attractive as the primary
+   choice than Croatoan.
+4. =cl-fu= and =raw-binding-ncurses= are viable low-level raw ncurses
+   binding candidates.  They are not high-level TUI frameworks, but both
+   loaded and drew text in the SSH PTY.
+5. Do not currently rely on =cl-tuition=, =uncursed=, =tvision/revision=,
+   =cot=, =tui-lisp=, =charmed=, =charming-clim=, =cl-termbox=,
+   =cl-termbox2=, =cl-notcurses=, =cffi-stfl=, =cl-tcod/tcod=, or
+   =cl-ncurses= for LispWorks 7.1 on this SmartOS host without patching
+   or installing additional native libraries.
+
+This is not a paper survey only.  The conclusions are based on ASDF load
+tests, native-library checks, and SSH PTY smoke tests on =fido=.
+
+* Research Question
+
+The practical question was not "which Common Lisp TUI library looks good
+on GitHub?"  It was:
+
+#+begin_quote
+Which Common Lisp TUI libraries can we rely on under LispWorks 7.1 in a
+SmartOS native zone, using the toolchain already available under
+=/opt/tools=?
+#+end_quote
+
+That framing matters.  Many Common Lisp terminal libraries are portable
+in the casual sense, but a deployable SCS choice needs all of these to
+work together:
+
+- LispWorks compiler and reader behavior.
+- ASDF and Quicklisp source loading.
+- CFFI or UFFI on LispWorks.
+- SmartOS native shared-library names and runtime search paths.
+- SmartOS header locations for CFFI grovel.
+- SSH pseudo-terminal behavior.
+- Terminal database behavior through =TERM= and terminfo.
+
+* Test Environment
+
+** Host
+
+#+begin_example
+SunOS fido.scs.re 5.11 joyent_20260522T154557Z i86pc i386 i86pc
+#+end_example
+
+** LispWorks
+
+The tested binary was:
+
+#+begin_example
+/opt/custom/lispworks/bin/lispworks-7-1-0-amd64-solaris
+#+end_example
+
+The command line used =-tty=.  Starting LispWorks without =-tty= tried
+to initialize CAPI/GTK and failed on this host because GTK-related
+shared libraries were not available.  That does not matter for terminal
+TUI tests, but it is important operationally: all tests here are
+terminal LispWorks tests.
+
+LispWorks reported:
+
+#+begin_example
+Version 7.1.0
+#+end_example
+
+** Toolchain
+
+The user clarified that the tools are under =/opt/tools=.  The tests
+therefore used this environment:
+
+#+begin_src sh
+PATH=/opt/tools/bin:/opt/tools/sbin:/usr/ccs/bin:/usr/bin:/bin:/usr/sbin:/sbin
+#+end_src
+
+Detected tools:
+
+| Tool | Path |
+|------+------|
+| =git= | =/opt/tools/bin/git= |
+| =gcc= | =/opt/tools/bin/gcc= |
+| =cc= | =/opt/tools/bin/cc= |
+| =make= | =/opt/tools/bin/make= |
+| =gmake= | =/opt/tools/bin/gmake= |
+| =curl= | =/opt/tools/bin/curl= |
+| =pkg-config= | =/opt/tools/bin/pkg-config= |
+| =pkgin= | =/opt/tools/bin/pkgin= |
+| =gtar= | =/usr/bin/gtar= |
+
+Observed versions:
+
+| Tool | Version |
+|------+---------|
+| =git= | =2.54.0= |
+| =gcc= | =13.4.0= |
+| =GNU make= | =4.4.1= |
+| =curl= | =8.20.0= |
+| =pkg-config= | =2.5.1= |
+| =pkgin= | =26.4.0= |
+
+** ncurses
+
+The installed pkgsrc package is:
+
+#+begin_example
+ncurses-6.6 = CRT screen handling and optimization package
+#+end_example
+
+The important installed libraries are:
+
+#+begin_example
+/opt/tools/lib/libncurses.so -> libncurses.so.6.6.0
+/opt/tools/lib/libncurses.so.6 -> libncurses.so.6.6.0
+/opt/tools/lib/libncurses.so.6.6.0
+#+end_example
+
+No =libncursesw.so= was present.  However, =pkg-config= reports that
+this ncurses build has wide-character support:
+
+#+begin_example
+-D__EXTENSIONS__ -DNCURSES_WIDECHAR -I/opt/tools/include/ncurses -I/opt/tools/include
+-L/opt/tools/lib -L/usr/lib/amd64 -Wl,-R/usr/lib/amd64 -Wl,-R/opt/tools/lib -lncurses
+#+end_example
+
+That mismatch drives the Croatoan result.  Croatoan asks for
+=libncursesw.so=; pkgsrc provides wide ncurses as =libncurses.so=.
+
+** Terminfo
+
+Both of these were present:
+
+#+begin_example
+/opt/tools/share/terminfo/x/xterm
+/usr/share/lib/terminfo/x/xterm
+#+end_example
+
+The PTY tests used =TERM=xterm=.
+
+* Method
+
+** Source Acquisition
+
+Quicklisp was installed under:
+
+#+begin_example
+/opt/tmp/cl-tui-test/quicklisp
+#+end_example
+
+Direct Quicklisp archive extraction inside LispWorks hit a
+=DEFLATE-DECOMPRESSION-ERROR=.  To avoid mistaking that Quicklisp client
+problem for library failure, I used Quicklisp dist metadata to compute
+source closures, downloaded archives with =/opt/tools/bin/curl=, checked
+them with =gzip -t=, and extracted them with =gtar= into:
+
+#+begin_example
+/opt/tmp/cl-tui-test/source
+#+end_example
+
+The original Quicklisp TUI closure contained 135 ASDF systems from 103
+Quicklisp projects.  An additional dependency closure for Git-only
+systems pulled 73 ASDF systems from 61 Quicklisp projects, chiefly for
+=coalton=, =log4cl=, =dexador=, =shasht=, and their dependencies.
+
+Git-only candidates were cloned under:
+
+#+begin_example
+/opt/tmp/cl-tui-test/git
+#+end_example
+
+** Test Layers
+
+The work used four layers of testing:
+
+1. Baseline ASDF load using only the normal =/opt/tools= runtime path.
+2. Compatibility ASDF load with SmartOS ncurses fixes.
+3. Functional SSH PTY smoke tests for high-level viable libraries.
+4. Functional SSH PTY smoke tests for low-level ncurses bindings.
+
+The functional smoke tests did not test every key, mouse event, color
+pair, resize event, Unicode path, or error path.  They tested the
+critical first deployment question: can the library initialize the
+terminal, draw, refresh, and restore control under LispWorks through SSH
+on SmartOS?
+
+** Compatibility Environment
+
+The ncurses-family compatibility environment was:
+
+#+begin_src sh
+PATH=/opt/tools/bin:/opt/tools/sbin:/usr/ccs/bin:/usr/bin:/bin:/usr/sbin:/sbin
+CPATH=/opt/tools/include/ncurses:/opt/tools/include
+LIBRARY_PATH=/opt/tools/lib
+LD_LIBRARY_PATH=/opt/tmp/cl-tui-test/lib:/opt/tools/lib:/usr/lib/amd64:/usr/lib
+PKG_CONFIG_PATH=/opt/tools/lib/pkgconfig
+TERM=xterm
+#+end_src
+
+For the test, I created:
+
+#+begin_example
+/opt/tmp/cl-tui-test/lib/libncursesw.so -> /opt/tools/lib/libncurses.so
+#+end_example
+
+This symlink was a diagnostic compatibility shim, not my recommended
+long-term deployment mechanism.  A production fix should either install
+or build a true =libncursesw.so= name, or patch the CFFI foreign-library
+definitions to accept SmartOS/pkgsrc =libncurses.so= when
+=NCURSES_WIDECHAR= is present.
+
+* Definite Recommendation
+
+** Primary Choice: Croatoan
+
+Use =Croatoan= first for a real Common Lisp TUI on this host.
+
+Reasons:
+
+- It is a real high-level terminal UI library, not just colorized output
+  or a raw binding.
+- It loaded successfully in LispWorks 7.1 after the SmartOS ncurses
+  library-name fix.
+- It initialized, drew, refreshed, and exited in an SSH PTY on =fido=.
+- It is better suited than raw ncurses bindings for ordinary application
+  work because it supplies higher-level structure over ncurses.
+
+The catch:
+
+- Croatoan does not work out of the box on this host because it looks
+  for =libncursesw.so= and the installed pkgsrc ncurses package exposes
+  =libncurses.so=.
+
+What to fix before relying on it:
+
+1. Replace the test symlink with a deliberate deployment solution.
+2. Add a tiny permanent smoke test to the project using Croatoan:
+   initialize screen, draw a status line, read one key, and unwind
+   through terminal cleanup.
+3. Test resize, function keys, arrows, mouse if needed, color pairs,
+   and the terminals SCS actually uses.
+4. Vendor or pin the exact Croatoan source and ncurses behavior rather
+   than relying on live Quicklisp extraction.
+
+** Secondary Choice: cl-charms
+
+Use =cl-charms= if the project wants a lower-level ncurses API or wants
+to build its own widget layer.
+
+Reasons:
+
+- It loaded in LispWorks with the =CPATH= and ncurses runtime fixes.
+- It drew and refreshed in the SSH PTY.
+- It is the backend for =cl-tui=.
+
+The catch:
+
+- Out of the box, CFFI grovel failed because =cc= could not find
+  =ncurses.h=.  Adding =/opt/tools/include/ncurses= to =CPATH= fixed
+  that.
+
+** Conditional Choice: cl-tui (naryl)
+
+=cl-tui= is technically viable after the same =cl-charms= fix:
+
+- ASDF load: OK under compatibility environment.
+- PTY smoke: OK.
+
+I would not pick it as the first choice for a new project unless its API
+is exactly what the application wants.  It is older, depends on
+=cl-charms=, and gives less confidence than Croatoan as the primary
+framework.
+
+** Low-Level Raw Binding Choices
+
+=cl-fu= and =raw-binding-ncurses= both passed load and PTY smoke tests.
+They are real candidates if the project wants to own the higher-level
+TUI layer.
+
+I would choose one of these only when:
+
+- Croatoan is too opinionated.
+- cl-charms is too small or incomplete for the needed ncurses surface.
+- We are prepared to write and maintain application-level widgets,
+  focus, event dispatch, screen invalidation, and cleanup.
+
+Between the two, =raw-binding-ncurses= appears broader and mechanically
+generated, while =cl-fu= is simpler to understand.  Both need deeper API
+and maintenance review before production use.
+
+* Result Matrix
+
+** Quicklisp Candidates, Baseline Environment
+
+This table used the ordinary =/opt/tools= runtime path, without the
+ncurses compatibility shim.
+
+| System | Result | Meaning |
+|--------+--------+---------|
+| =alexandria= | OK | Baseline dependency loads. |
+| =cffi= | OK | CFFI works under LispWorks on this host. |
+| =cffi-grovel= | OK | Grovel infrastructure works in principle. |
+| =tuition= | FAIL | Fails through =serapeum= compile-file. |
+| =uncursed= | FAIL | LispWorks 7.1 rejects =defpackage :local-nicknames=. |
+| =croatoan= | FAIL | Missing =libncursesw.so=. |
+| =croatoan-ncurses= | FAIL | Missing =libncursesw.so=. |
+| =ansi-escape= | FAIL | SBCL-specific packages in =stty= code. |
+| =cl-tui= | FAIL | =cl-charms= grovel cannot find =ncurses.h=. |
+| =cl-charms= | FAIL | Grovel cannot find =ncurses.h=. |
+| =cl-charms-marquee= | FAIL | Same =cl-charms= grovel failure. |
+| =cl-charms-paint= | FAIL | Same =cl-charms= grovel failure. |
+| =cl-charms-timer= | FAIL | Same =cl-charms= grovel failure. |
+| =cl-ncurses= | ASDF OK | False positive; PTY call later failed. |
+| =cl-termbox= | FAIL | Missing =libtermbox.so=. |
+| =tcod= | FAIL | Missing =libtcod.so=. |
+| =parse-rgb= | FAIL | Pulls =LIBTCOD=; missing =libtcod.so=. |
+| =cl-ansi-term= | FAIL | Fails through =serapeum= compile-file. |
+| =cl-ansi-text= | OK | Output helper, not a full TUI. |
+| =cl-drawille= | OK | Drawing helper, not a full TUI. |
+| =terminfo= | OK | Capability database helper. |
+| =termp= | OK | Terminal predicate/helper. |
+| =trivial-escapes= | OK | Escape sequence helper. |
+| =trivial-raw-io= | FAIL | Implementation-specific reader syntax. |
+| =linedit= | OK | Line editor, not a full-screen TUI. |
+| =clog-terminal= | OK | Web/CLOG terminal widget, not an OS terminal TUI. |
+
+** ncurses Compatibility Retest
+
+With =CPATH=, =LD_LIBRARY_PATH=, =LIBRARY_PATH=, =PKG_CONFIG_PATH=, and
+the test =libncursesw.so= symlink:
+
+| System | Result |
+|--------+--------|
+| =croatoan-ncurses= | OK |
+| =croatoan= | OK |
+| =cl-charms= | OK |
+| =cl-charms-marquee= | OK |
+| =cl-charms-paint= | OK |
+| =cl-charms-timer= | OK |
+| =cl-tui= | OK |
+
+** High-Level PTY Smoke Tests
+
+The following systems were run under =ssh -tt fido= in a real PTY:
+
+| System | Result | Smoke behavior |
+|--------+--------+----------------|
+| =croatoan= | OK | Entered curses, drew text, refreshed, exited. |
+| =cl-charms= | OK | Entered curses, drew text, refreshed, exited. |
+| =cl-tui= | OK | Entered curses, drew text, refreshed, exited. |
+
+** Git-Only / Non-Quicklisp Candidate Results
+
+The tested Git repositories were:
+
+| Candidate | URL | Commit |
+|-----------+-----+--------|
+| =acute-terminal-control= | https://github.com/lisp-mirror/acute-terminal-control | =9a5475d= |
+| =cffi-stfl= | https://github.com/Ramarren/cffi-stfl | =50219f5= |
+| =charmed= | https://github.com/parenworks/charmed | =dc0dee2= |
+| =charming-clim= | https://github.com/TurtleWarePL/eu.turtleware.charming-clim | =d56dc08= |
+| =cl-fu= | https://github.com/cl-fui/cl-fu | =7489acd= |
+| =cl-notcurses= | https://github.com/androclus/cl-notcurses | =e0cbcdc= |
+| =cl-term= | https://github.com/alesya-h/cl-term | =27602e5= |
+| =cl-termbox2= | https://github.com/garlic0x1/cl-termbox2 | =4742a17= |
+| =cot= | https://github.com/garlic0x1/cot | =8bbf8a5= |
+| =ncurses-leningkoei= | https://github.com/leningkoei/ncurses | =03b5599= |
+| =raw-binding-ncurses= | https://github.com/aruscher/raw-binding-ncurses | =13f609e= |
+| =termcolor= | https://github.com/chaitanyagupta/termcolor | =78d3fda= |
+| =tui-lisp= | https://github.com/kulkarniniraj/tui-lisp | =4912d91= |
+| =tvision/revision= | https://github.com/lispnik/tvision | =ef45e59= |
+
+Load results:
+
+| System | Result | Meaning |
+|--------+--------+---------|
+| =acute-terminal-control= | FAIL | ASDF references missing =cl-ecma-48.lisp=; no submodule present. |
+| =cffi-stfl= | FAIL | Missing =libstfl.so=. |
+| =charmed= | FAIL | LispWorks compile-file failure reading Unicode box characters in source. |
+| =eu.turtleware.charming-clim= | FAIL | LispWorks 7.1 rejects =defpackage :local-nicknames=. |
+| =cl-fu= | OK | Low-level ncurses binding loaded. |
+| =cl-notcurses= | FAIL | Missing =libnotcurses.so.3= or =libnotcurses.so=. |
+| =cl-term= | OK | ANSI escape helper, not a full TUI. |
+| =termcolor= | OK | Color output helper, not a full TUI. |
+| =termbox2= | FAIL | LispWorks compile-file failure before functional test; also native termbox2 not installed. |
+| =cot= | FAIL | After fetching Coalton, fails in =eclector= under LispWorks. |
+| =raw-binding-ncurses= | OK | Low-level ncurses binding loaded. |
+| =revision= | FAIL | SBCL-specific =SB-EXT= references; README says SBCL target. |
+| =tui= | FAIL | After fetching dependencies, fails through =serapeum= compile-file. |
+
+** Low-Level PTY Smoke Tests
+
+| System | Result | Meaning |
+|--------+--------+---------|
+| =cl-fu= | OK | Entered curses, drew text, refreshed, exited. |
+| =raw-binding-ncurses= | OK | Entered curses, drew text, refreshed, exited. |
+| =cl-ncurses= | FAIL | ASDF load was a false positive; first =initscr= call hit unresolved external =initscr=. |
+
+* Failure Analysis
+
+** The ncurses Library Name Problem
+
+The largest false negative in the baseline test was ncurses naming.
+Croatoan expected =libncursesw.so=.  SmartOS/pkgsrc installed ncurses
+6.6 as =libncurses.so=, while =pkg-config= exposed
+=-DNCURSES_WIDECHAR=.
+
+This means the installed library is wide-character capable, but not
+named the way many Linux-oriented Common Lisp CFFI definitions expect.
+
+Affected libraries:
+
+- =croatoan=
+- =croatoan-ncurses=
+- =cl-fu= in some feature configurations
+- =raw-binding-ncurses= when it prefers =libncursesw.so=
+- any future ncurses binding that assumes Linux-style =ncursesw= names
+
+The compatibility symlink proved viability, but the proper fix should
+be explicit.  A project should carry a SmartOS CFFI foreign-library
+definition or install a deliberate =libncursesw.so= compatibility link
+in a controlled prefix.
+
+** The ncurses Header Problem
+
+=cl-charms= failed at CFFI grovel until the compiler saw:
+
+#+begin_example
+/opt/tools/include/ncurses/ncurses.h
+#+end_example
+
+Setting this fixed the load:
+
+#+begin_src sh
+CPATH=/opt/tools/include/ncurses:/opt/tools/include
+#+end_src
+
+The production lesson is the same as for library names: do not rely on
+ambient shell luck.  Put the include path in the build environment or
+patch the grovel configuration.
+
+** Serapeum FASL Externalization on LispWorks 7.1
+
+Several promising libraries failed through current Quicklisp =serapeum=:
+
+- =tuition= / =cl-tuition=
+- =cl-ansi-term=
+- =tui-lisp=
+
+The recurring error was in =serapeum level2/units=:
+
+#+begin_example
+Object #<pointer out of memory bounds: ...> is of type SYSTEM::MARKER
+which is not externalizable to ... t_units ... .64sfasl
+#+end_example
+
+That is not a TUI problem per se.  It is a LispWorks 7.1 plus current
+Serapeum compile-file problem.  But it is still decisive for adoption:
+libraries whose dependency closure includes this Serapeum path are not
+reliable here until Serapeum is patched, pinned to a compatible version,
+or avoided.
+
+** defpackage :local-nicknames on LispWorks 7.1
+
+LispWorks 7.1 rejected:
+
+#+begin_example
+Unknown options in defpackage: ((:LOCAL-NICKNAMES ...))
+#+end_example
+
+Affected libraries:
+
+- =uncursed=
+- =eu.turtleware.charming-clim=
+
+This may be patchable by removing local nicknames or using a
+compatibility layer, but it is not a no-work adoption.
+
+** SBCL-Specific Code
+
+Some projects are explicitly or effectively SBCL-oriented:
+
+- =tvision/revision= uses =SB-EXT= and its README states SBCL as the
+  target.
+- =ansi-escape= fails in =stty= code because LispWorks cannot find
+  =SB-POSIX= and =SB-SYS=.
+- =trivial-raw-io= failed on implementation-specific reader syntax.
+- =ncurses-leningkoei= says it is for SBCL and uses SBCL/roswell style
+  build assumptions rather than ASDF portability.
+
+These are not LispWorks choices without porting.
+
+** Missing Native Libraries
+
+These libraries failed for simple native-library reasons:
+
+| Library | Missing native library |
+|---------+------------------------|
+| =cl-termbox= | =libtermbox.so= |
+| =cl-termbox2= | =libtermbox2.so= would be needed; compile also failed first. |
+| =cl-notcurses= | =libnotcurses.so= or =libnotcurses.so.3= |
+| =cffi-stfl= | =libstfl.so= |
+| =tcod= / =cl-tcod= | =libtcod.so= |
+| =parse-rgb= | Pulls =LIBTCOD=, so also =libtcod.so=. |
+
+The package search on =fido= did not find termbox, tcod, or notcurses
+in the configured pkgsrc repository.  These could still be built from
+source, but doing so would become a native packaging project, not a
+Common Lisp library adoption.
+
+** Quicklisp Client Issue
+
+Quicklisp itself installed, but Quicklisp archive extraction inside
+LispWorks hit deflate errors.  I avoided that by using external
+=curl=, =gzip=, and =gtar=.
+
+This matters for repeatability.  A production project should not depend
+on live Quicklisp downloading inside LispWorks 7.1 on this host.  It
+should vendor sources, pin archives, or use an external fetch/extract
+step.
+
+* Candidate-by-Candidate Notes
+
+** Croatoan
+
+Source: https://codeberg.org/McParen/croatoan
+
+Status on =fido=:
+
+- Baseline ASDF load: FAIL, missing =libncursesw.so=.
+- Compatibility ASDF load: OK.
+- SSH PTY smoke: OK.
+
+Croatoan is the best practical choice after a small SmartOS ncurses
+library-name fix.  It gives a real TUI abstraction and it passed the
+only functional test that mattered at this stage.
+
+** cl-charms
+
+Source: https://github.com/HiTECNOLOGYs/cl-charms
+
+Status:
+
+- Baseline ASDF load: FAIL, =ncurses.h= not found by C grovel.
+- Compatibility ASDF load: OK.
+- SSH PTY smoke: OK.
+
+This is a viable lower-level backend.  It is probably the right fallback
+if Croatoan does too much or if a project wants to own its own layout
+and event model.
+
+** cl-tui (naryl / Quicklisp)
+
+Source: https://github.com/naryl/cl-tui
+
+Status:
+
+- Baseline ASDF load: FAIL through =cl-charms= grovel.
+- Compatibility ASDF load: OK.
+- SSH PTY smoke: OK.
+
+This is viable technically but less compelling strategically.  It is
+older and depends on =cl-charms=.  Use only if its API is a good fit.
+
+** cl-fu
+
+Source: https://github.com/cl-fui/cl-fu
+
+Status:
+
+- ASDF load: OK.
+- SSH PTY smoke: OK.
+
+It is a CFFI ncurses binding, not a high-level framework.  It is useful
+if the application wants direct ncurses calls.
+
+** raw-binding-ncurses
+
+Source: https://github.com/aruscher/raw-binding-ncurses
+
+Status:
+
+- ASDF load: OK.
+- SSH PTY smoke: OK.
+
+It is a broad raw ncurses binding.  ASDF emitted a naming warning about
+a secondary system named =raw-bindings-ncurses/demo=, and the binding
+should be reviewed before relying on it.  Still, it passed the basic
+functional test.
+
+** cl-ncurses
+
+Quickdocs: https://quickdocs.org/cl-ncurses
+
+Status:
+
+- ASDF load: OK.
+- SSH PTY smoke: FAIL.
+
+This is the clearest false positive.  The system loaded, but it warned
+that it could not load ncurses; the first call to =initscr= failed with
+an unresolved external =initscr=.  Its search paths do not include
+=/opt/tools/lib=.  It is also old and UFFI-based.  Do not choose it for
+new work.
+
+** cl-tuition / tuition
+
+Source: https://github.com/atgreen/cl-tuition
+
+Status:
+
+- ASDF load: FAIL through =serapeum=.
+
+This was promising in the paper survey, but live LispWorks testing
+overrules that.  It is not a reliable choice on this host until the
+Serapeum/LispWorks 7.1 compile-file problem is solved.
+
+** uncursed
+
+Source: https://github.com/Plisp/uncursed
+
+Status:
+
+- ASDF load: FAIL.
+
+It uses =defpackage :local-nicknames=, which LispWorks 7.1 rejected.
+This may be patchable, but it is not reliable as-is.
+
+** tvision / revision
+
+Source: https://github.com/lispnik/tvision
+
+Status:
+
+- ASDF load: FAIL.
+
+The project README says SBCL is the target, and the code uses =SB-EXT=.
+It is not a LispWorks candidate.
+
+** cot
+
+Source: https://github.com/garlic0x1/cot
+
+Status:
+
+- Initial ASDF load: missing =coalton=.
+- After fetching Coalton closure: FAIL in =eclector= under LispWorks.
+
+This is not ready for this LispWorks environment.
+
+** tui-lisp
+
+Source: https://github.com/kulkarniniraj/tui-lisp
+
+Status:
+
+- Initial ASDF load: missing =log4cl=.
+- After fetching dependency closure: FAIL through =serapeum=.
+
+It also depends on =cl-charms=, =dexador=, =shasht=, =serapeum=, and
+=str=, which is a heavy stack for a small TUI experiment.
+
+** charmed
+
+Source: https://github.com/parenworks/charmed
+
+Status:
+
+- ASDF load: FAIL compiling =src/ansi=.
+
+The failure involved LispWorks reading Unicode box-drawing characters as
+invalid token constituents.  The README says the library supports SBCL,
+CCL, and ECL on Linux, not LispWorks.  It may be portable with encoding
+and implementation work, but it is not reliable as-is here.
+
+** charming-clim
+
+Source: https://github.com/TurtleWarePL/eu.turtleware.charming-clim
+
+Status:
+
+- ASDF load: FAIL on =defpackage :local-nicknames=.
+
+Interesting research code, not a no-work LispWorks 7.1 choice.
+
+** termbox, termbox2, notcurses, STFL, and libtcod Bindings
+
+These are blocked by native dependency availability on this host.
+
+- =cl-termbox= needs =libtermbox.so=.
+- =cl-termbox2= targets =libtermbox2.so= and also hit a LispWorks
+  compile-file problem.
+- =cl-notcurses= needs =libnotcurses.so=.
+- =cffi-stfl= needs =libstfl.so=.
+- =tcod= / =cl-tcod= needs =libtcod.so=.
+
+They should not be chosen unless we first decide to package those C
+libraries for SmartOS native zones.
+
+** ANSI and Terminal Output Helpers
+
+These loaded but are not full TUIs:
+
+- =cl-ansi-text=
+- =cl-drawille=
+- =terminfo=
+- =termp=
+- =trivial-escapes=
+- =linedit=
+- =clog-terminal=
+- =cl-term=
+- =termcolor=
+
+Use them for command output, styling, terminal capability checks, line
+editing, or web terminal widgets.  Do not confuse them with full-screen
+terminal UI frameworks.
+
+* Production Recipe
+
+For a Croatoan or cl-charms project on =fido=, start from this runtime
+shape:
+
+#+begin_src sh
+export PATH=/opt/tools/bin:/opt/tools/sbin:/usr/ccs/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export CPATH=/opt/tools/include/ncurses:/opt/tools/include
+export LIBRARY_PATH=/opt/tools/lib
+export PKG_CONFIG_PATH=/opt/tools/lib/pkgconfig
+export LD_LIBRARY_PATH=/opt/custom/cl-tui/lib:/opt/tools/lib:/usr/lib/amd64:/usr/lib
+export TERM=xterm
+#+end_src
+
+Then choose one of these deliberate ncursesw fixes:
+
+1. Preferred: patch the library foreign-library definition to include
+   =/opt/tools/lib/libncurses.so= or =libncurses.so= for SmartOS/pkgsrc.
+2. Acceptable: install a controlled compatibility symlink:
+
+#+begin_src sh
+mkdir -p /opt/custom/cl-tui/lib
+ln -s /opt/tools/lib/libncurses.so /opt/custom/cl-tui/lib/libncursesw.so
+#+end_src
+
+The second option is simple but should be documented, monitored, and
+owned by the deployment.
+
+* Recommended Next Test
+
+Before writing a real application, build one small acceptance program in
+Croatoan and one fallback program in cl-charms.  Each should:
+
+1. Enter alternate/curses screen.
+2. Draw a bordered main area and status line.
+3. Display terminal size.
+4. Read =q= to quit.
+5. Read arrow keys.
+6. Handle =Ctrl-C= or an error by restoring the terminal.
+7. Exercise at least one color pair.
+8. Run through =ssh -tt fido=.
+
+If Croatoan passes that, use Croatoan.
+
+If Croatoan fails on an application-specific input or layout path but
+cl-charms works, use cl-charms and build the small layer needed.
+
+If both are too high-level or too narrow, then compare =cl-fu= and
+=raw-binding-ncurses=.
+
+* Limitations
+
+The tests here prove loadability and first terminal contact, not full
+application maturity.
+
+Not yet tested:
+
+- Keyboard event mapping beyond minimal initialization.
+- Arrow keys, function keys, escape timing, and mouse input.
+- Resize events.
+- Color-pair behavior beyond basic initialization.
+- Unicode output and input.
+- Long-running memory behavior.
+- Delivered LispWorks images.
+- Error recovery after asynchronous interruption.
+- Multiple terminal emulators beyond =TERM=xterm= under SSH.
+
+Those are the next gates before declaring a library production-ready for
+a specific application.
+
+* Raw Evidence Locations
+
+The remote test evidence remains on =fido= under:
+
+#+begin_example
+/opt/tmp/cl-tui-test
+#+end_example
+
+Key files:
+
+| File | Contents |
+|------+----------|
+| =results/asdf-load.tsv= | Baseline Quicklisp ASDF load results. |
+| =results/asdf-load-compat.tsv= | ncurses compatibility ASDF retest. |
+| =results/pty-smoke.tsv= | Croatoan, cl-charms, cl-tui PTY smoke results. |
+| =results/asdf-load-git.tsv= | Git-only ASDF load results. |
+| =results/pty-smoke-lowlevel.tsv= | cl-fu, raw-binding-ncurses, cl-ncurses PTY smoke results. |
+| =results/asdf-logs/= | Baseline ASDF logs. |
+| =results/asdf-compat-logs/= | Compatibility ASDF logs. |
+| =results/asdf-git-logs/= | Git-only ASDF logs. |
+| =source/= | Extracted Quicklisp source archives. |
+| =git/= | Cloned Git-only candidates. |
+
+* Final Answer
+
+For LispWorks 7.1 on this SmartOS =fido= host, the practical dependency
+choice is:
+
+#+begin_example
+Croatoan first.
+cl-charms second.
+cl-tui only if its older API is specifically desired.
+cl-fu or raw-binding-ncurses only for raw ncurses work.
+#+end_example
+
+The adoption blocker is not Common Lisp.  It is the deployment boundary:
+pkgsrc ncurses is wide-character capable but named =libncurses.so=, not
+=libncursesw.so=, and CFFI grovel needs the =/opt/tools= include path.
+Once those are made explicit, Croatoan, cl-charms, and cl-tui all work
+well enough to proceed to an application-level prototype.
+
+Do not choose the other surveyed libraries for this target today unless
+the project explicitly includes patching LispWorks compatibility or
+packaging additional native libraries for SmartOS.

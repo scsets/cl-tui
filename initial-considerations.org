@@ -237,6 +237,14 @@ measured requirement.
 - For warehouse-style apps, *prefer a tiny terminal abstraction* over
   ncurses or large FFI stacks unless a measured need arises later.
 
+Live compatibility research on fido (LispWorks 7.1, pkgsrc ncurses, ASDF
+load and SSH PTY smoke tests) lives in =lispworks-ncurses-survey-on-smartos.org=.
+That survey is *orthogonal* to this design: it evaluates Croatoan, =cl-charms=,
+and other ncurses frameworks if we ever need them. The default here remains
+direct ANSI/VT100 primitives and cooked line input. *Name collision:* the
+Quicklisp library =cl-tui= (naryl, ncurses widgets on =cl-charms=) is not
+this repository's =cl-tui= shared operator layer.
+
 * Operator interface vs developer interface
 
 This distinction is central.
