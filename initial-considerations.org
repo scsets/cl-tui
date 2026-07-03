@@ -319,7 +319,9 @@ thin skins over validated operations.
   input, returns a value; calling a sub-screen pushes logically, returning
   pops -- no separate state machine.
 - *One input funnel:* all keystrokes through =read-line= / =read-key= so
-  the app is scriptable and tests can feed text.
+  the app is scriptable and tests can feed text. The funnel needs *two modes*:
+  block until a key (menus and forms), and wake on timeout as well as key
+  (instrument panels while a job runs).
 - *Redraw by repaint:* clear and repaint from current state; draw functions
   should be near-pure functions of state.
 - *Conditions:* wrap each screen loop in a handler; in delivery, show a
@@ -336,9 +338,10 @@ Fix these once across all apps:
   commit.
 - *Confirmation:* destructive actions require explicit yes, default no.
 - *Keys:* consistent back, quit, accept keys; show them on the status line.
-- *Process feedback:* state plainly before long work; stream output or
-  simple heartbeat while running; one clear result line at end. No fake
-  spinners.
+- *Process feedback:* state plainly before long work; for long jobs prefer an
+  *instrument panel* (fixed frame, fields updated in place) over scrolling
+  log lines; stream output or show a simple heartbeat; one clear result line
+  at end. No fake spinners.
 
 ** Menus are thin; logic is testable
 
@@ -429,6 +432,10 @@ Warehouse apps orchestrate platform tools rather than reimplement them.
   may be minimal.
 - Centralize "run command with feedback" in =cl-tui= so every application
   behaves consistently during long jobs.
+- *Transparency (SMIT ethic):* before running a platform command, show the
+  operator the exact invocation; run it; stream output; log it for replay.
+  A menu wrapper that hides the command becomes a black box; one that shows
+  it earns trust and teaches capable operators.
 
 Some operations may later use ioctl, libzfs, or other FFI -- treat each as
 a separate adoption decision under SCS.ASD policy. Default remains
@@ -507,6 +514,131 @@ serve, but it exercises every convention:
 
 A storage app might disambiguate =tank/data= vs =tank/data@snap= the same way.
 
+* Prior art: golden examples to study
+
+The style we want is not new; it was ordinary serious software for two
+decades. Rather than invent conventions, steal them from programs that
+already solved this. What follows is curated, grouped by what each teaches
+best. Zone tooling is used in examples; the same patterns apply to storage,
+networking, services, and back-office apps.
+
+** Three screen archetypes
+
+Name these explicitly -- a common mistake is building one archetype with
+the reflexes of another:
+
+- *MENU* -- numbered choices; program mostly idle, repaints on operator action.
+  Event-driven.
+- *FORM* -- labelled fields, per-field validation, final confirm. Cursor moves
+  field to field. Event-driven.
+- *INSTRUMENT PANEL* -- fixed frame whose fields update in place while a long
+  task runs (percentage, counter, elapsed time). Time-driven: repaints on a
+  clock, not only on keypress; never idle while the job runs.
+
+memtest86 is the canonical instrument panel. Most classics below are menu or
+form. We need all three.
+
+** Menu and administration driver
+
+*** AIX SMIT -- primary golden example
+
+SMIT (System Management Interface Tool) is the closest ancestor of a SmartOS
+operator tool. Menus drill to a task; the task presents a form; then -- its
+signature move -- SMIT shows the *exact command line* it is about to run,
+runs it, streams output with plain running / OK / failed status, and logs
+the command for replay. That "show the command, then run it" habit is the
+most valuable single idea in this list.
+
+*** SCO sysadmsh -- cultural ancestor
+
+sysadmsh (System Administration Shell on SCO Xenix/UNIX): full-screen menu,
+first-letter navigation, command-and-status line pinned at the bottom like
+an editor minibuffer. If SMIT teaches task flow, sysadmsh teaches the overall
+frame.
+
+*** HP-UX SAM -- the sibling
+
+SAM (System Administration Manager) -- same era, same idea as SMIT: menus
+into forms into actions. A second data point on how the giants structured this.
+
+** Data-entry form -- warehouse and back-office archetype
+
+*** Informix PERFORM -- definitive character-mode business form
+
+PERFORM shows labelled fields over a database row, with a *ring menu* across
+the top -- single-key verbs (Query, Next, Add, Update, Remove, Browse) -- and
+a status line beneath. Nearly every Xenix/UNIX warehouse and accounting app
+felt like this. Steal the ring menu and fixed status line wholesale.
+
+*** Progress 4GL character mode ("chui")
+
+Same lesson as PERFORM; what enormous numbers of manufacturing and warehouse
+systems actually ran for decades.
+
+*** DOS accounting packages
+
+DacEasy, Peachtree Complete for DOS, dBASE III/IV ASSIST -- literal shop and
+back-office systems: menu tree, data-entry form behind each function, printed
+reports. The exact flavour we are evoking.
+
+** Instrument panel -- process feedback
+
+*** memtest86 / memtest86+
+
+Fixed frame rewritten in place while a long job runs -- pass count, errors,
+test percentage, elapsed time. Exactly how a "provisioning zone (this can
+take up to a minute)" screen should behave: paint a frame once, update numbers
+inside it; do not scroll log lines at the operator.
+
+*** top / htop
+
+Same "keep the frame, rewrite fields on a timer" technique in tools you can
+run today. Clearest live demo of time-driven repaint.
+
+** Command legend and overall feel
+
+*** PINE -- persistent command legend
+
+Two-row command legend pinned at the bottom: the keys that act *right now* are
+always visible. Adopt for our status/prompt line on every screen.
+
+*** Still-runnable minimal menus
+
+For living reference: =nmtui=, =raspi-config=, FreeBSD =bsdconfig= -- descend
+from dialog/libdialog (boxed menus, checklists, progress gauges). If we ever
+want boxes, this is the restrained end to copy.
+
+** Admire, but do not over-copy
+
+Study for ideas, not as templates:
+
+- *Norton Commander / Midnight Commander* -- two-pane file manager, function-key
+  bar. More apparatus than we want; PINE gives the legend idea more simply.
+- *Borland Turbo Vision* -- pull-down menus, movable dialogs, drop shadows.
+  Precisely the "modern framework" aesthetic our non-goals rule out.
+- *Lotus 1-2-3* -- slash-key command bar with one-line description. Elegant,
+  richer than a numbered menu needs.
+- *WordPerfect 5.1* -- near-blank screen, single modest status line: purest
+  "blank screen, nothing you do not need" ethos.
+
+** If you study three
+
+Study *SMIT*, *Informix PERFORM*, and *memtest86*. They map one-to-one onto
+menu driver, data-entry form, and process panel -- and cover the whole
+application between them.
+
+** Mapping golden examples to our screens
+
+#+begin_example
+cl-tui screen (any app)          Golden reference       What to take
+-------------------------------  ---------------------  ----------------------------
+Main menu                        sysadmsh, SMIT         menu frame, bottom status line
+Task form (create, configure)    Informix PERFORM       labelled fields, ring menu
+Long-running job in progress     SMIT + memtest86       show command, stream, panel
+Destructive confirm + act        SMIT                   show command, guard, result
+Bottom key legend (every screen) PINE                   always-visible live keys
+#+end_example
+
 * Suggested system shape (when coding starts)
 
 #+begin_example
@@ -514,10 +646,10 @@ cl-tui/                    ; shared library + this document
   initial-considerations.org
   src/
     terminal.lisp          ; minimal primitives (clear, move, reverse, bell)
-    input.lisp             ; one funnel: read-line, later read-key
+    input.lisp             ; one funnel: block + timeout modes
     operator.lisp          ; menus, prompts, pick-one, wait-for-enter
-    subprocess.lisp        ; run with feedback conventions
-    screen.lisp            ; 80x24 layout, title/status regions
+    subprocess.lisp        ; run with feedback; show-command-then-run
+    screen.lisp            ; 80x24 layout; menu, form, instrument panel
 
 some-app/                  ; one delivered application (example: zones)
   some-app.asd
@@ -554,6 +686,7 @@ interaction and subprocess conventions. Each SmartOS app adds its own
 8. Wire formats at API boundaries vs internal s-expression models.
 9. Whether =--force= batch flags exist alongside the menu binary for scripts.
 10. How multiple apps share one =cl-tui= library version on the same host.
+11. Input funnel timeout interval for instrument panels during long jobs.
 
 * Summary
 
@@ -561,9 +694,10 @@ Build *shop-floor terminal applications* on SmartOS in Common Lisp using
 LispWorks Delivery: numbered menus, plain feedback, no arbitrary operator
 Lisp, developer power in the Listener, =defstruct= data models, explicit
 disambiguation, and thin wrappers over *whatever SmartOS platform commands
-the application needs*. SBCL smoke-tests portable core. =cl-tui= is the
-shared operator layer; each app owns its domain (zones today, storage,
-network, services tomorrow). Avoid modern dashboard TUIs unless plain menus
-fail a measured requirement.
+the application needs*. Study SMIT, PERFORM, and memtest86 for menu, form,
+and panel patterns. Show commands before running them. SBCL smoke-tests
+portable core. =cl-tui= is the shared operator layer; each app owns its
+domain (zones today, storage, network, services tomorrow). Avoid modern
+dashboard TUIs unless plain menus fail a measured requirement.
 
 That is the core of =cl-tui=.
