@@ -7,12 +7,21 @@
              (uiop:split-string line :separator '(#\space #\tab))))
 
 (defun parse-imgadm-avail-line (line)
-  "Parse one imgadm avail row. Returns an IMAGE-RECORD or NIL."
+  "Parse one imgadm avail row. Returns an IMAGE-RECORD or NIL.
+
+imgadm uses fixed columns; image names may contain spaces, so the tail
+fields (version, os, type, published date) are taken from the end."
   (let ((fields (split-fields line)))
     (when (and (>= (length fields) 6)
                (>= (length (first fields)) 8)
                (not (char= (char (first fields) 0) #\-)))
-      (destructuring-bind (uuid name version os type published) fields
+      (let* ((n (length fields))
+             (uuid (first fields))
+             (published (nth (1- n) fields))
+             (type (nth (- n 2) fields))
+             (os (nth (- n 3) fields))
+             (version (nth (- n 4) fields))
+             (name (format nil "~{~A~^ ~}" (subseq fields 1 (- n 4)))))
         (make-image-record
          :uuid uuid
          :name name
