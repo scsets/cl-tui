@@ -16,6 +16,11 @@ Think warehouse inventory, accounting entry, stock control, back-office
 admin -- programs that lived entirely in the terminal and were operated by
 staff who never saw source code and never typed arbitrary commands.
 
+This document is a *considerations paper*, not a design spec or code. Where
+a Lisp idiom or terminal mechanism is non-obvious, it is explained so later
+code can share vocabulary. The intended reader includes newcomers who may
+know little Common Lisp.
+
 This document records language, platform, and design decisions for building
 such applications on SmartOS. It is meant to guide *any* future operator
 tool -- zone management, storage, networking, services, inventory, or
@@ -48,6 +53,27 @@ Characteristics we *do not want*:
 - Embedded web views, HTML, or browser-based UI.
 - A free Lisp REPL exposed to the operator (no typing =(...)= at the prompt).
 - Flashy progress bars unless plain text progress is insufficient.
+
+** Visual vocabulary (fixed)
+
+- Design to *80 columns by 24 rows*; degrade gracefully if smaller.
+- *ASCII only*; reverse video at most (title bar, selected line).
+- Stable screen regions on every screen:
+
+#+begin_example
++------------------------------------------------------------------------------+  row 1-2  title
+| MYAPP 1.0                            fido                        2026-07-03   |
++------------------------------------------------------------------------------+
+|                                                                              |
+|    1.  List items                                                            |  body:
+|    2.  Create                                                                |  menu or
+|    3.  Delete                                                                |  form
+|    0.  Exit                                                                  |
+|                                                                              |
++------------------------------------------------------------------------------+  row 24
+| Enter choice: _                                        [ status message ]    |  prompt / status
++------------------------------------------------------------------------------+
+#+end_example
 
 ** Name note
 
@@ -98,6 +124,81 @@ for that app's commands only.
 Design for *extension*: new menu items and new command modules should not
 require rethinking the operator model.
 
+* Guiding principles
+
+These win any conflict with cleverness below.
+
+- *Clarity first.* The operator's screen and the maintainer's code should
+  both be obvious.
+- *Simplicity over machinery.* A numbered menu read line-by-line beats an
+  event-driven widget tree. Reach for more only when the simple form
+  genuinely cannot do the job, and say why.
+- *One target, one terminal reality.* SmartOS only; ANSI/VT100-class terminal
+  over SSH or serial. No abstractions whose only purpose is another platform.
+- *Robustness above all* for an app that may *be* the operator's login. A
+  single Lisp error must never drop a warehouse user into a debugger or a
+  shell.
+
+* Target environment details
+
+** How the operator connects
+
+- *SSH* (common case): pseudo-terminal, usually xterm-class. =TERM= is set.
+- *Serial console* (lowest common denominator): plainer VT100; assume VT100
+  if =TERM= is unset or unknown.
+
+** Application as login program (warehouse pattern)
+
+A dedicated role account can use the delivered binary as its *login program*
+instead of a shell. The operator connects and lands directly in the menu; on
+exit, the session ends. This is both good UX and a security boundary -- no
+shell behind the app unless explicitly provided.
+
+This interacts with account setup, SMF (usually not needed for per-login
+interactive apps), and the build-time decision on the Lisp escape hatch
+(see below).
+
+** Deployment shape
+
+- Deliver a self-contained binary; pin its version; install in the target
+  zone (copy in or bake into zone image).
+- SMF applies only if the program must run as a managed service, not for a
+  typical per-login menu app.
+
+* The terminal layer (concrete)
+
+** Minimal primitive set
+
+Resist a large terminal API. A menu-and-form app needs only:
+
+- Clear the screen; move cursor to row/column.
+- Write text at the cursor.
+- Reverse video on/off (title bar, selected line).
+- Ring the bell (invalid key).
+- Read a line (cooked input) or, later, a single key (cbreak).
+
+Everything the app draws is built from this contract.
+
+** Implementation choices (settled recommendations)
+
+| Decision | Recommendation | Rationale |
+|----------+----------------+-----------|
+| Escape sequences vs terminfo | Start with *direct ANSI/VT100* behind the abstraction | Safe over SSH on SmartOS; no curses dependency |
+| Line input vs single-key | Start with *cooked* input (type + Enter) | Robust, scriptable, testable by piping text |
+| Redraw strategy | *Full repaint* on state change | No incremental diffing; instant for menus |
+| Encoding | *ASCII only* | Matches aesthetic; avoids width bugs |
+| Exit paths | *Always restore terminal* (normal video, sane line discipline) | Every exit, including errors |
+
+Revisit terminfo or cbreak per screen only when the simple form fails a
+measured requirement.
+
+** Signals and =TERM=
+
+- Read =TERM= at startup.
+- Decide treatment of interrupt (Ctrl-C), terminate, and window-change (may
+  ignore resize and hold 80x24).
+- Never leave the terminal in raw/no-echo mode after an error.
+
 * Language and implementation
 
 ** Primary: Commercial LispWorks
@@ -110,14 +211,22 @@ require rethinking the operator model.
 - Delivery image is tuned for console use (=:interface :console= on Unix).
 - Keep the delivered image focused: omit editor, compiler, and IDE pieces
   the operator does not need. Add only what the menu loop requires.
+- *Disable the interactive debugger* in delivered images; route unexpected
+  conditions to a log and a status-line message, never a debugger prompt.
+- *Platform confirmed (2026-07-03, SmartOS host):* LispWorks 7.1.0
+  =amd64-solaris= at =/opt/custom/lispworks= runs on SmartOS; =deliver= and
+  =save-image= produce a standalone ELF binary with no separate runtime.
+  Build and deliver *on the host* -- no cross-build shim required.
 
-** Secondary: SBCL for smoke tests only
+** Secondary: SBCL for smoke tests and fast loop
 
-- SBCL may compile and run portable subsets to catch style warnings and
-  gross portability mistakes.
-- SBCL is *not* an authoritative test target when LispWorks-specific
-  features (Delivery, certain FFI, implementation packages) are used.
-- Say plainly in code comments or system docs when a file is LispWorks-only.
+- SBCL builds and runs on SmartOS today -- use it for smoke tests and a
+  fast development loop on the real host, not as a hedge against LispWorks.
+- SBCL can produce an executable with a chosen top-level (analogous to
+  Delivery) for testing the delivered-binary shape.
+- Keep terminal control and image-building *behind the same abstraction*
+  as LispWorks so screens and domain code do not know the implementation.
+  Tests can supply a plain-text backend instead of a real terminal.
 
 ** Libraries and SCS.ASD policy
 
@@ -125,8 +234,8 @@ require rethinking the operator model.
 - Prefer accepted libraries already vetted for LispWorks and SmartOS native
   zones. Examine new libraries one at a time: FFI, native extensions,
   Quicklisp availability, build requirements on SmartOS.
-- For warehouse-style apps, *prefer stdio and LispWorks stream I/O* over
-  ncurses bindings unless a measured need arises later.
+- For warehouse-style apps, *prefer a tiny terminal abstraction* over
+  ncurses or large FFI stacks unless a measured need arises later.
 
 * Operator interface vs developer interface
 
@@ -155,7 +264,17 @@ Choice:
 Submenus drill into domain actions (create zone, list pools, etc.). The
 operator cannot evaluate arbitrary Lisp. They choose numbered options
 and answer prompts. This is *REPL-like* only in the sense of repeated
-read-eval-print *cycles you define* -- not a language REPL.
+read-eval-print *cycles you define* -- not a language REPL. Same shape as
+=psql=, =gdb=, or a specialized debugger top-level.
+
+** Build-time modes: operator vs administrator
+
+Same codebase, different delivery profiles:
+
+| Profile | Lisp escape hatch | Debugger | Typical deploy |
+|---------+-------------------+----------+----------------|
+| Warehouse operator | off | disabled | login program |
+| Internal admin | optional | dev builds | SSH command |
 
 ** Developer: full Listener during development
 
@@ -165,6 +284,9 @@ In LispWorks IDE or batch development image:
   parsers against live platform output on a SmartOS host.
 - Use the Listener to refine prompts and data models before freezing them
   into the delivered menu loop.
+- *Development liveness:* redefine a screen's draw or handler while the app
+  runs, re-enter that screen to see the change -- a main reason to build in
+  Lisp, at no cost at deploy time.
 
 ** Optional expert mode (later, maybe)
 
@@ -189,6 +311,35 @@ Before menus or Delivery scripts:
 Warehouse apps feel reliable when the *data* is explicit and the menus are
 thin skins over validated operations.
 
+** Application architecture
+
+- *Domain vs presentation:* domain functions take and return data; no screen
+  I/O in the domain layer.
+- *Screens as functions; navigation as a stack:* each screen paints, reads
+  input, returns a value; calling a sub-screen pushes logically, returning
+  pops -- no separate state machine.
+- *One input funnel:* all keystrokes through =read-line= / =read-key= so
+  the app is scriptable and tests can feed text.
+- *Redraw by repaint:* clear and repaint from current state; draw functions
+  should be near-pure functions of state.
+- *Conditions:* wrap each screen loop in a handler; in delivery, show a
+  short status-line message and continue -- never crash out of the session.
+
+** Screen and interaction conventions
+
+Fix these once across all apps:
+
+- *Menus:* numbered list, prompt =Enter choice: =; invalid input rings bell
+  and shows one-line message, never unwinds the session.
+- *Forms:* labelled fields one at a time, defaults in brackets (Enter
+  accepts default), per-field validation, final review-and-confirm before
+  commit.
+- *Confirmation:* destructive actions require explicit yes, default no.
+- *Keys:* consistent back, quit, accept keys; show them on the status line.
+- *Process feedback:* state plainly before long work; stream output or
+  simple heartbeat while running; one clear result line at end. No fake
+  spinners.
+
 ** Menus are thin; logic is testable
 
 #+begin_src lisp
@@ -203,6 +354,16 @@ thin skins over validated operations.
 
 SBCL smoke tests target the domain layer. LispWorks integration tests may
 call real platform commands on a SmartOS host when available.
+
+** Testing strategy
+
+- *Domain, headless:* pure functions, no terminal (manifest build, parse
+  =vmadm list=, validation).
+- *Presentation, scripted input:* feed keystrokes through the input funnel;
+  capture painted output via a dumb text backend (no escape sequences in
+  assertions).
+- *Golden screens:* for stable menus, compare expected text snapshots; assert
+  invariants (items listed, bad input rejected) rather than exact escape bytes.
 
 ** Feedback during long work
 
@@ -321,12 +482,22 @@ the language*. Warehouse apps say no; developers say yes in the IDE.
 - CLOS-heavy designs when =defstruct= and functions suffice.
 - Linux-only library docs applied blindly to SmartOS.
 - Hiding long platform work with no progress message (operators think it hung).
-- Baking one app's domain (=vmadm= only) into the shared =cl-tui= library.
+- Baking one app's domain into the shared =cl-tui= library.
+- Incremental screen diffing instead of full repaint (complexity without benefit).
+- Leaving terminal in raw/no-echo mode after an error.
+- Invalid menu input that unwinds the session or prints a Lisp traceback.
 
-* Illustrative example: ambiguous image names (zones)
+* First proving-ground application (example)
 
-One case that motivated the disambiguation rules; the same pattern applies
-anywhere labels are ambiguous (datasets, zones by alias, service instances).
+A zone tool is a natural first program -- not the only one =cl-tui= will
+serve, but it exercises every convention:
+
+- Main menu: list, create, delete, quit.
+- Create: form (brand, *select image from numbered list*, RAM, disk, network),
+  review-and-confirm, provision with visible feedback, result line.
+- Delete: show target, explicit yes, stop if running, confirm.
+
+** Illustrative example: ambiguous image names (zones)
 
 - =imgadm avail name=base-64-lts= shows many versions (14.4.0 ... 25.4.0).
 - =imgadm list= on a host shows only installed images, but =ubuntu-24.04=
@@ -342,9 +513,11 @@ A storage app might disambiguate =tank/data= vs =tank/data@snap= the same way.
 cl-tui/                    ; shared library + this document
   initial-considerations.org
   src/
+    terminal.lisp          ; minimal primitives (clear, move, reverse, bell)
+    input.lisp             ; one funnel: read-line, later read-key
     operator.lisp          ; menus, prompts, pick-one, wait-for-enter
     subprocess.lisp        ; run with feedback conventions
-    screen.lisp            ; clear, banner, pagination
+    screen.lisp            ; 80x24 layout, title/status regions
 
 some-app/                  ; one delivered application (example: zones)
   some-app.asd
@@ -370,13 +543,17 @@ interaction and subprocess conventions. Each SmartOS app adds its own
 
 * Open questions (to resolve before large implementations)
 
-1. Where do delivered binaries live on SmartOS hosts (=/opt/tools/bin=? per-app =/opt/APP/bin=?).
-2. Whether non-login SSH wrappers set =PATH= and =TERM= explicitly.
-3. Logging: file per run, syslog, or stderr-only in debug deliveries.
-4. Wire formats at boundaries (JSON for =vmadm -f=, plain text for others):
-   internal s-expression models may differ per app.
-5. Whether =--force= batch flags exist alongside the menu binary for scripts.
-6. How multiple apps share one =cl-tui= library version on the same host.
+1. LispWorks on SmartOS -- *resolved* (2026-07-03): 7.1.0 amd64-solaris at
+   =/opt/custom/lispworks=; delivery verified on host.
+2. Line input vs single-key for first screens (recommendation: cooked first).
+3. Direct ANSI vs terminfo (recommendation: ANSI behind abstraction first).
+4. How the app is installed as a login program; lockdown level per role.
+5. Confirm =TERM= values on SSH vs serial console on production hosts.
+6. Where delivered binaries live (=/opt/tools/bin=? per-app =/opt/APP/bin=?).
+7. Logging: file per run, syslog, or stderr-only in debug deliveries.
+8. Wire formats at API boundaries vs internal s-expression models.
+9. Whether =--force= batch flags exist alongside the menu binary for scripts.
+10. How multiple apps share one =cl-tui= library version on the same host.
 
 * Summary
 
