@@ -2,12 +2,6 @@
 
 (defparameter +vmadm-list-cmd+ '("/usr/sbin/vmadm" "list"))
 
-(defun platform-run-capture (command)
-  (ignore-errors
-    (uiop:run-program command
-                      :output :string
-                      :error-output nil)))
-
 (defun split-fields (line)
   (remove-if (lambda (s) (zerop (length s)))
              (uiop:split-string line :separator '(#\space #\tab))))
@@ -36,7 +30,7 @@
 
 (defun list-vms ()
   "Run vmadm list and return VM records."
-  (let ((text (platform-run-capture +vmadm-list-cmd+)))
+  (let ((text (run-capture +vmadm-list-cmd+)))
     (if text
         (parse-vmadm-list text)
         nil)))

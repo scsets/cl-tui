@@ -7,14 +7,6 @@
   '("/bin/sh" "-c" "prtconf 2>/dev/null | grep -i memory | head -5"))
 (defparameter +smbios-system-cmd+ '("/usr/sbin/smbios" "-t" "1"))
 
-(defun run-capture (command)
-  "Run COMMAND, returning trimmed stdout or NIL on failure."
-  (ignore-errors
-    (string-trim '(#\newline #\return #\space #\tab)
-                 (uiop:run-program command
-                                   :output :string
-                                   :error-output nil))))
-
 (defun first-line (text)
   (when text
     (first (uiop:split-string text :separator '(#\newline)))))

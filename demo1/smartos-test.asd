@@ -8,11 +8,12 @@
   :components ((:file "package")
                (:file "terminal" :depends-on ("package"))
                (:file "input" :depends-on ("package" "terminal"))
+               (:file "subprocess" :depends-on ("package"))
                (:file "operator" :depends-on ("package" "terminal" "input"))
                (:file "data" :depends-on ("package"))
                (:module "platform"
                 :pathname "platform"
-                :depends-on ("data")
+                :depends-on ("data" "subprocess")
                 :serial t
                 :components ((:file "hardware")
                              (:file "vmadm")))
