@@ -52,6 +52,37 @@
                  (text (vm-detail-text detail :command (format nil "~{~A~^ ~}" command))))
             (paginate-text text cols rows)))))))
 
+(defun screen-image-avail ()
+  "Browse imgadm avail with the paginated picker, then show image details."
+  (multiple-value-bind (cols rows)
+      (terminal-size)
+    (terminal-clear)
+    (draw-header cols)
+    (format t "Available images~%~%")
+    (format t "Command: ~{~A~^ ~}~%~%"
+            +imgadm-avail-cmd+)
+    (format t "Loading image list...~%")
+    (finish-output))
+  (let ((images (list-available-images)))
+    (when (null images)
+      (format t "No images found, or imgadm is unavailable on this host.~%")
+      (wait-for-enter)
+      (return-from screen-image-avail))
+    (let ((image (pick-numbered-item images
+                                     :title "Available images (imgadm avail)"
+                                     :label #'image-picker-label)))
+      (when image
+        (multiple-value-bind (cols rows)
+            (terminal-size)
+          (terminal-clear)
+          (draw-header cols)
+          (format t "Image details~%~%")
+          (finish-output)
+          (let ((text (image-detail-text
+                       image
+                       :command (format nil "~{~A~^ ~}" +imgadm-avail-cmd+))))
+            (paginate-text text cols rows)))))))
+
 (defun command-loop ()
   (handler-case
       (loop
@@ -62,15 +93,17 @@
            (format t "~%  1. Hardware parameters~%")
            (format t "  2. List virtual machines~%")
            (format t "  3. View VM settings~%")
+           (format t "  4. Available images (imgadm avail)~%")
            (terpri)
            (format t "  0. Exit~%~%")
            (draw-status-line cols rows "0=Exit  Enter=choose"))
-         (let ((choice (read-menu-choice :valid '("0" "1" "2" "3"))))
+         (let ((choice (read-menu-choice :valid '("0" "1" "2" "3" "4"))))
            (cond
              ((string= choice "0") (return))
              ((string= choice "1") (screen-hardware))
              ((string= choice "2") (screen-vm-list))
-             ((string= choice "3") (screen-vm-settings)))))
+             ((string= choice "3") (screen-vm-settings))
+             ((string= choice "4") (screen-image-avail)))))
     (error (e)
       (format t "~%Unexpected error: ~A~%" e)
       (wait-for-enter))))

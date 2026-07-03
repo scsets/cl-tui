@@ -16,7 +16,8 @@
                 :depends-on ("data" "subprocess")
                 :serial t
                 :components ((:file "hardware")
-                             (:file "vmadm")))
+                             (:file "vmadm")
+                             (:file "imgadm")))
                (:file "app-operator"
                 :depends-on ("operator" "platform"))
                (:file "main" :depends-on ("app-operator"))))
